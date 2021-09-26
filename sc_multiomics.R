@@ -349,6 +349,7 @@ geneSetAveragePlot <- function(genes, object, object.class = "seurat", assay = '
   }
 }
 
+#' Return the proportion of different cells.
 #' @param seu.obj the seurat object
 #' @param group.by group by
 #' @param split.by split by
@@ -383,7 +384,7 @@ My_Cell_Proportion <- function(seu.obj,group.by,split.by){
   return(orig.matrix)
 }
 
-# origin from seurat DotPlot function
+#' origin from seurat DotPlot function
 #' @param features Input vector of features, or named list of feature vectors if feature-grouped panels are desired
 #' @param col.min Minimum scaled average expression threshold
 #' @param col.max Maximum scaled average expression threshold
