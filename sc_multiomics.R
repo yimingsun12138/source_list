@@ -1149,6 +1149,7 @@ my_knn_label_transfer <- function(data,query,reference_var,query_var='predicted'
   for (i in 2:dim(predicted_table)[2]) {
     predicted_table[,i] <- as.numeric(predicted_table[,i])
   }
+  gc()
   return(predicted_table)
 }
 
