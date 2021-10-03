@@ -1033,126 +1033,6 @@ my_harmony_integration <- function(named_seurat_list,
   return(seurat_obj)
 }
 
-#' return predicted label using knn.
-#' first create a knn graph using reduction from data and query seurat objects.
-#' sample cells in data seurat object by knn graph.
-#' predict the label of cells in query by the label of sampled cells in data.
-#' @param data seurat object as reference.
-#' @param query seurat object to be predicted.
-#' @param reference_var column name in the meta.data of data seurat object, provide the reference label.
-#' @param query_var column name to store the predicted label.
-#' @param reduction reduction object in seurat for calculating knn graph, default is 'pca'.
-#' @param knn_k k parameter in k nearest neighbor.
-#' @param knn_n number of neighbors in data seurat object to be sampled by knn.
-#' @param n_core number of cores to be used for calculation.
-#' @param lib_path .libPaths() path.
-#' @param source_list_path source_list.R path.
-#' @param FUN function to be used to calculate the probability for a nearest neighbor to be sampled in data seurat object.
-#' @param replace see replace parameter in base::sample.
-#' @param SNN whether to create a SNN graph.
-my_knn_label_transfer <- function(data,query,reference_var,query_var='predicted',
-                                  reduction='pca',knn_k=50,knn_n=50,n_core=1,
-                                  lib_path='/data/User/sunym/software/R_lib/R_4.1.1/',
-                                  source_list_path='/data/User/sunym/code/source_list.R',
-                                  FUN="(1/exp(dists))*(1/sum(1/exp(dists)))",
-                                  replace=TRUE,SNN=FALSE){
-  require(parallel)
-  #check paramater
-  if(!(replace) & (knn_n > knn_k)){
-    stop('total number of nearest neighbours is less than neighbours to be sampled!')
-  }
-  print('data check pass!')
-  #create prediction data.frame
-  score_list <- paste(unique(data@meta.data[,reference_var]),'score',sep = '.')
-  predicted_table <- matrix(ncol = length(colnames(query)),nrow = (4+length(score_list)))
-  colnames(predicted_table) <- colnames(query)
-  rownames(predicted_table) <- c('cell_id',query_var,'predicted_score',score_list,'unknown.score')
-  predicted_table <- as.data.frame(predicted_table)
-  predicted_table['cell_id',] <- colnames(predicted_table)
-  
-  #create knn graph
-  nearest <- My_FindKNN(data = data@reductions[[reduction]]@cell.embeddings,
-                        query = query@reductions[[reduction]]@cell.embeddings,
-                        k = knn_k)
-  
-  print('knn graph created!')
-  
-  #create SNN graph
-  if(SNN){
-    print('create SNN graph, setting replace to TRUE!')
-    replace <- TRUE
-    #create nearest neighbour
-    nearest_2 <- My_FindKNN(data = query@reductions[[reduction]]@cell.embeddings,
-                            query = data@reductions[[reduction]]@cell.embeddings,
-                            k = knn_k)
-    
-    #create nearest matrix
-    nearest_matrix <- do.call(rbind,base::lapply(colnames(query),FUN = function(x){
-      return(as.numeric(colnames(data) %in% nearest$nn.cell[x,]))
-    }))
-    rownames(nearest_matrix) <- colnames(query)
-    colnames(nearest_matrix) <- colnames(data)
-    nearest_matrix <- as.data.frame(nearest_matrix)
-    
-    nearest_matrix_2 <- do.call(cbind,base::lapply(colnames(data),FUN = function(x){
-      return(as.numeric(colnames(query) %in% nearest_2$nn.cell[x,]))
-    }))
-    rownames(nearest_matrix_2) <- colnames(query)
-    colnames(nearest_matrix_2) <- colnames(data)
-    nearest_matrix_2 <- as.data.frame(nearest_matrix_2)
-    
-    nearest_matrix <- nearest_matrix+nearest_matrix_2-1
-    nearest_matrix[nearest_matrix <= 0] <- Inf
-    
-    #filter cells
-    nearest_matrix <- do.call(rbind,base::lapply(rownames(nearest$nn.cell),FUN = function(x){
-      return(as.numeric(nearest_matrix[x,nearest$nn.cell[x,]]))
-    }))
-    rownames(nearest_matrix) <- rownames(nearest$nn.cell)
-    nearest_matrix <- as.data.frame(nearest_matrix)
-    nearest$nn.dists <- (nearest$nn.dists)*nearest_matrix
-    print('computing SNN done!')
-  }
-  
-  #make cluster
-  data <- data@meta.data
-  cl <- makeCluster(n_core)
-  clusterExport(cl,c('data','reference_var','query_var','knn_n','FUN','replace','nearest','score_list','lib_path','source_list_path'),envir = environment())
-  clusterEvalQ(cl,.libPaths(lib_path))
-  clusterEvalQ(cl,source(source_list_path))
-  
-  print('make cluster done!')
-  #calculation
-  predicted_table <- parallel::parApply(cl = cl,X = predicted_table,MARGIN = 2,FUN = function(x){
-    cell_id <- x[1]
-    nn <- sampleNearestNeighbors(cell = cell_id,knn.object = nearest,N = knn_n,FUN = FUN,replace = replace)
-    if(nn[1] != 'unknown'){
-      nn <- as.character(data[nn,reference_var])
-    }
-    nn <- factor(nn,levels = c(sub(pattern = '.score',replacement = '',fixed = TRUE,score_list),'unknown'))
-    nn <- table(nn)
-    predicted <- names(which.max(nn))
-    predicted_score <- as.character(nn[predicted]/knn_n)
-    nn <- as.character(nn/knn_n)
-    nn <- c(cell_id,predicted,predicted_score,nn)
-    names(nn) <- c('cell_id',query_var,'predicted_score',score_list,'unknown.score')
-    return(nn)
-  })
-  
-  stopCluster(cl)
-  
-  #return data
-  predicted_table <- t(predicted_table)
-  predicted_table <- as.data.frame(predicted_table,stringsAsFactors = FALSE)
-  rownames(predicted_table) <- as.character(predicted_table[,'cell_id'])
-  predicted_table <- predicted_table[,-1]
-  for (i in 2:dim(predicted_table)[2]) {
-    predicted_table[,i] <- as.numeric(predicted_table[,i])
-  }
-  gc()
-  return(predicted_table)
-}
-
 #' return confusion matrix based on original label and predicted label.
 #' @param ori the original label vector.
 #' @param prd the predicted label vector.
@@ -1161,4 +1041,156 @@ my_confusion_matrix <- function(ori, prd){
   cross.validation.filt[is.na(cross.validation.filt)] <- 0
   cross.validation.filt <- cross.validation.filt %>% tidyr::gather(key = "prd", value = "value", -ori) %>% filter(value > 0)
   return(cross.validation.filt)
+}
+
+#' Using low dimension graph( like PCA, NMF, CCA and so on ) to create mutual nearest neighbor graph between data and query.
+#' Return the probability label matrix of query calculated by mnn graph and the corresponding label in data.
+#' @param data The reference seurat object.
+#' @param query The query seurat object.
+#' @param reference_var The colname of the meta.data table storing the reference label.
+#' @param reduction The low dimension graph to be used for calculation.
+#' @param knn The number of nearest neighbors to be selected between data and query, small knn results a locally prediction of reference label.
+my_low_dim_anchor_construction <- function(data,query,reference_var,reduction='pca',knn=30){
+  
+  require(Seurat)
+  require(dplyr)
+  
+  #create nearest neighbour graph
+  query_nearest <- My_FindKNN(data = data@reductions[[reduction]]@cell.embeddings,
+                              query = query@reductions[[reduction]]@cell.embeddings,
+                              k = knn)
+  
+  print('query knn graph created!')
+  
+  data_nearest <- My_FindKNN(data = query@reductions[[reduction]]@cell.embeddings,
+                             query = data@reductions[[reduction]]@cell.embeddings,
+                             k = knn)
+  
+  print('data knn graph created!')
+  
+  #create mutual nearest neighbour
+  temp <- do.call(rbind,base::lapply(colnames(query),function(x){
+    return(as.numeric(colnames(data) %in% query_nearest$nn.cell[x,]))
+  }))
+  
+  rownames(temp) <- colnames(query)
+  colnames(temp) <- colnames(data)
+  temp <- as.data.frame(temp)
+  nearest_matrix <- temp
+  
+  temp <- do.call(cbind,base::lapply(colnames(data),function(x){
+    return(as.numeric(colnames(query) %in% data_nearest$nn.cell[x,]))
+  }))
+  rownames(temp) <- colnames(query)
+  colnames(temp) <- colnames(data)
+  temp <- as.data.frame(temp)
+  
+  nearest_matrix <- nearest_matrix+temp-1
+  nearest_matrix[nearest_matrix <= 0] <- Inf
+  
+  #filter cells
+  nearest_matrix <- do.call(rbind,base::lapply(rownames(query_nearest$nn.cell),FUN = function(x){
+    return(as.numeric(nearest_matrix[x,query_nearest$nn.cell[x,]]))
+  }))
+  rownames(nearest_matrix) <- rownames(query_nearest$nn.cell)
+  nearest_matrix <- as.data.frame(nearest_matrix)
+  
+  #correct query_nearest dist matrix
+  query_nearest$nn.dists <- (query_nearest$nn.dists)*nearest_matrix
+  rownames(query_nearest$nn.dists) <- rownames(query_nearest$nn.cell)
+  print('MNN graph created!')
+  
+  #create anchor
+  group_list <- c(unique(as.character(data@meta.data[,reference_var])),'unknown')
+  
+  anchor_matrix <- do.call(rbind,base::lapply(colnames(query),function(x){
+    nn <- query_nearest$nn.cell[x,]
+    nn <- as.character(data@meta.data[nn,reference_var])
+    nn.dists <- as.numeric(query_nearest$nn.dists[x,])
+    nn.dists <- exp(-nn.dists)
+    if(sum(nn.dists) == 0){
+      nn <- factor('unknown',levels = group_list)
+      nn <- as.numeric(table(nn))
+      names(nn) <- group_list
+      return(nn)
+    }else{
+      nn_list <- base::lapply(group_list,FUN = function(label){
+        if(sum(nn == label) == 0){
+          return(0)
+        }else{
+          temp <- which(nn == label)
+          return(sum(nn.dists[temp])/sum(nn.dists))
+        }
+      })
+      nn_list <- unlist(nn_list)
+      nn_list <- as.numeric(nn_list)
+      names(nn_list) <- group_list
+      return(nn_list)
+    }
+  }))
+  
+  colnames(anchor_matrix) <- group_list
+  rownames(anchor_matrix) <- colnames(query)
+  anchor_matrix <- as.data.frame(anchor_matrix)
+  print('create anchor done!')
+  gc()
+  return(anchor_matrix)
+}
+
+#' Predict query cell label based on MNN graph between query and reference( data ).
+#' @param data The reference seurat object.
+#' @param query The query seurat object.
+#' @param reference_var The colname of the meta.data table storing the reference label.
+#' @param reduction The low dimension graph to be used for calculation.
+#' @param mnn The number of nearest neighbors to be selected between data and query, small mnn results a locally prediction of reference label.
+#' @param knn Create knn graph on query to smooth the mnn prediction, how many neighbors to be selected?
+#' @param return_query Whether to return query seurat object?
+my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=30,knn=50,return_query=TRUE){
+  
+  require(Seurat)
+  require(dplyr)
+  
+  #create anchor matrix
+  anchor_matrix <- my_low_dim_anchor_construction(data = data,query = query,reference_var = reference_var,reduction = reduction,knn = mnn)
+  
+  #create knn graph
+  nearest <- My_FindKNN(data = query@reductions[[reduction]]@cell.embeddings,
+                        query = query@reductions[[reduction]]@cell.embeddings,
+                        k = knn+1)
+  nearest$nn.idx <- nearest$nn.idx[,-1]
+  nearest$nn.dists <- nearest$nn.dists[,-1]
+  nearest$nn.cell <- nearest$nn.cell[,-1]
+  
+  #modify knn graph
+  nearest_matrix <- do.call(rbind,base::lapply(colnames(query),FUN = function(x){
+    temp <- rep(0,length(colnames(query)))
+    names(temp) <- colnames(query)
+    temp[nearest$nn.cell[x,]] <- exp(-nearest$nn.dists[x,])/sum(exp(-nearest$nn.dists[x,]))
+    return(temp)
+  }))
+  
+  colnames(nearest_matrix) <- colnames(query)
+  rownames(nearest_matrix) <- colnames(query)
+  nearest_matrix <- as.matrix(nearest_matrix)
+  
+  #predict
+  predict_matrix <- nearest_matrix %*% as.matrix(anchor_matrix[colnames(query),])
+  rownames(predict_matrix) <- colnames(query)
+  colnames(predict_matrix) <- colnames(anchor_matrix)
+  
+  if(return_query){
+    label <- base::lapply(colnames(query),FUN = function(x){
+      return(which.max(predict_matrix[x,]))
+    })
+    label <- unlist(label)
+    label <- colnames(predict_matrix)[label]
+    query$predict_label <- label
+    
+    colnames(predict_matrix) <- paste(colnames(predict_matrix),'score',sep = '_')
+    predict_matrix <- predict_matrix[colnames(query),]
+    query@meta.data <- cbind(query@meta.data,predict_matrix)
+    return(query)
+  }else{
+    return(predict_matrix)
+  }
 }
