@@ -1177,6 +1177,7 @@ my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=3
   predict_matrix <- nearest_matrix %*% as.matrix(anchor_matrix[colnames(query),])
   rownames(predict_matrix) <- colnames(query)
   colnames(predict_matrix) <- colnames(anchor_matrix)
+  gc()
   
   if(return_query){
     label <- base::lapply(colnames(query),FUN = function(x){
