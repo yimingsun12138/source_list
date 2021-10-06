@@ -1145,7 +1145,8 @@ my_low_dim_anchor_construction <- function(data,query,reference_var,reduction='p
 #' @param mnn The number of nearest neighbors to be selected between data and query, small mnn results a locally prediction of reference label.
 #' @param knn Create knn graph on query to smooth the mnn prediction, how many neighbors to be selected?
 #' @param return_query Whether to return query seurat object?
-my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=30,knn=50,return_query=TRUE){
+#' @param Iteration Using query data knn graph to smooth the mnn prediction, how many times to iterate?
+my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=30,knn=50,Iteration=5,return_query=TRUE){
   
   require(Seurat)
   require(dplyr)
@@ -1165,7 +1166,14 @@ my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=3
   nearest_matrix <- do.call(rbind,base::lapply(colnames(query),FUN = function(x){
     temp <- rep(0,length(colnames(query)))
     names(temp) <- colnames(query)
-    temp[nearest$nn.cell[x,]] <- exp(-nearest$nn.dists[x,])/sum(exp(-nearest$nn.dists[x,]))
+    dist_list <- nearest$nn.dists[x,]
+    if(var(dist_list) == 0){
+      temp[nearest$nn.cell[x,]] <- rep(x=1/knn,times = knn)
+    }else if(sum(exp(-(dist_list^2)/(2*var(dist_list)))) == 0){
+      temp[nearest$nn.cell[x,]] <- rep(x=1/knn,times = knn)
+    }else{
+      temp[nearest$nn.cell[x,]] <- exp(-(dist_list^2)/(2*var(dist_list)))/sum(exp(-(dist_list^2)/(2*var(dist_list))))
+    }
     return(temp)
   }))
   
@@ -1174,7 +1182,12 @@ my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=3
   nearest_matrix <- as.matrix(nearest_matrix)
   
   #predict
-  predict_matrix <- nearest_matrix %*% as.matrix(anchor_matrix[colnames(query),])
+  predict_matrix <- anchor_matrix
+  if(Iteration){
+    for (i in 1:Iteration) {
+      predict_matrix <- nearest_matrix %*% as.matrix(predict_matrix[colnames(query),])
+    }
+  }
   rownames(predict_matrix) <- colnames(query)
   colnames(predict_matrix) <- colnames(anchor_matrix)
   gc()
