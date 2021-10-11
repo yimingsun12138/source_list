@@ -1208,3 +1208,69 @@ my_MNN_label_transfer <- function(data,query,reference_var,reduction='pca',mnn=3
     return(predict_matrix)
   }
 }
+
+#' Predict query cell label based on KNN graph between query and reference( data ).
+#' @param data The reference seurat object.
+#' @param query The query seurat object.
+#' @param reference_var The colname of the meta.data table storing the reference label.
+#' @param reduction The low dimension graph to be used for calculation.
+#' @param knn How many nearest neighbors to be selected in data seurat object?
+#' @param return_query Whether to return query seurat object?
+my_KNN_label_transfer <- function(data,query,reference_var,reduction='pca',knn=5,return_query=TRUE){
+  
+  #load package
+  require(Seurat)
+  require(dplyr)
+  
+  #create anchor matrix
+  group_list <- unique(as.character(data@meta.data[,reference_var]))
+  anchor_matrix <- do.call(rbind,base::lapply(colnames(data),FUN = function(x){
+    return(as.numeric(as.character(data@meta.data[x,reference_var]) == group_list))
+  }))
+  rownames(anchor_matrix) <- colnames(data)
+  colnames(anchor_matrix) <- group_list
+  anchor_matrix <- as.matrix(anchor_matrix)
+  print('create anchor matrix done!')
+  
+  #create knn graph
+  nearest <- My_FindKNN(data = data@reductions[[reduction]]@cell.embeddings,
+                        query = query@reductions[[reduction]]@cell.embeddings,
+                        k = knn)
+  
+  #modify knn graph
+  nearest_matrix <- do.call(rbind,base::lapply(colnames(query),FUN = function(x){
+    temp <- rep(0,length(colnames(data)))
+    names(temp) <- colnames(data)
+    dist_list <- nearest$nn.dists[x,]
+    temp[nearest$nn.cell[x,]] <- exp(-dist_list)/sum(exp(-dist_list))
+    return(temp)
+  }))
+  rownames(nearest_matrix) <- colnames(query)
+  colnames(nearest_matrix) <- colnames(data)
+  nearest_matrix <- as.matrix(nearest_matrix)
+  print('create knn graph done!')
+  
+  #predict
+  predict_matrix <- nearest_matrix %*% anchor_matrix
+  rownames(predict_matrix) <- colnames(query)
+  colnames(predict_matrix) <- group_list
+  gc()
+  print('predict done!')
+  
+  #return
+  if(return_query){
+    label <- base::lapply(colnames(query),FUN = function(x){
+      return(which.max(predict_matrix[x,]))
+    })
+    label <- unlist(label)
+    label <- colnames(predict_matrix)[label]
+    query$predict_label <- label
+    
+    colnames(predict_matrix) <- paste(colnames(predict_matrix),'score',sep = '_')
+    predict_matrix <- predict_matrix[colnames(query),]
+    query@meta.data <- cbind(query@meta.data,predict_matrix)
+    return(query)
+  }else{
+    return(predict_matrix)
+  }
+}
