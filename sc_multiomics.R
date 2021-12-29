@@ -1,9 +1,11 @@
 ###################################################
 ## Project: sc_multiomics                        ##
 ## Script Purpose: collect the function I wrote  ##
-## Data: 2021.09.26                              ##
+## Data: 2021.12.29                              ##
 ## Author: Yiming Sun                            ##
 ###################################################
+
+# Seurat related ----------------------------------------------------------
 
 #' SCT integrate function in Seurat
 #' @param object.list Seurat object list to be integrated
@@ -20,174 +22,6 @@ My_SCT_Integrate <- function(object.list,nfeature=3000){
   DefaultAssay(object.integrated) <- 'integrated'
   object.integrated <- RunPCA(object.integrated, npcs = 50, verbose = TRUE)
   return(object.integrated)
-}
-
-#' suggest k and lambda for NMF in liger
-#' @param object the liger object
-#' @param lambda the range of lambda to be tested
-#' @param k the range of k to be tested
-#' @param parl_num the number of cores to be used
-#' @param library_path your library path for .libPaths()
-#' @param pic_path the path to store the picture results
-#' some default parameters, usually no need to change
-MySuggestLiger <- function(object,lambda,k,parl_num,library_path,pic_path,
-                           knn_k = 20,quantiles = 50,min_cells = 20,do.center = FALSE,
-                           max_sample = 1000,refine.knn = TRUE,eps = 0.9,resolution = 0.4,min_dist = 0.1){
-  require(rliger)
-  require(parallel)
-  
-  test_lambda <- c()
-  test_k <- c()
-  for(i in lambda){
-    for(j in k){
-      test_lambda <- append(test_lambda,i)
-      test_k <- append(test_k,j)
-    }
-  }
-  
-  cl <- makeCluster(parl_num)
-  clusterExport(cl,c('library_path','pic_path','test_lambda','test_k','object','knn_k','quantiles','min_cells','do.center','max_sample','refine.knn','eps','resolution','min_dist'),envir = environment())
-  clusterEvalQ(cl,.libPaths(library_path))
-  clusterEvalQ(cl,library(rliger))
-  alignment_score <- parLapply(cl = cl,1:length(test_lambda),function(x){
-    lambda <- test_lambda[x]
-    k <- test_k[x]
-    object <- optimizeALS(object,lambda = lambda,k = k)
-    #Quantile Normalization and Joint Clustering
-    object <- quantile_norm(object,knn_k = knn_k,quantiles = quantiles,min_cells = min_cells,do.center = do.center,max_sample = max_sample,refine.knn = refine.knn,eps = eps)
-    object <- louvainCluster(object,resolution = resolution)
-    object <- runUMAP(object,distance = 'cosine',min_dist = min_dist)
-    all.plots <- plotByDatasetAndCluster(object, axis.labels = c('UMAP 1', 'UMAP 2'), return.plots = T)
-    char <- paste('lambda',as.character(lambda),'k',as.character(k),sep = '_')
-    char <- paste(pic_path,char,sep = '/')
-    char <- paste(char,'pdf',sep = '.')
-    pdf(file = char,width = 12,height = 6)
-    print(all.plots[[1]] + all.plots[[2]])
-    dev.off()
-    return(0)
-  })
-  stopCluster(cl)
-  return('done')
-}
-
-#' homologous gene express convert
-#' @param express_matrix express_matrix has to be large dgcMatrix format
-#' @param anno the annotation table
-#' @param filter_anno whether to filter the duplicated rows in col_1 and col_2 of anno,
-#' useful when same gene in specie 1 (convert from) can be converted to several different gene names in species 2 (to converte to).
-#' note the annotation need 4 cols, which are gene name and gene id for the species to be convert and the species to convert to
-My_Convert_Homology_Gene_ID <- function(express_matrix,anno,filter_anno = TRUE){
-  require(dplyr)
-  require(Seurat)
-  
-  gene_pair <- paste(anno[,1],anno[,2],sep = '_')
-  duplicated_pair <- unique(gene_pair[duplicated(gene_pair)])
-  anno <- anno[!(gene_pair %in% duplicated_pair),]
-  
-  if(filter_anno){
-    #filter duplicate from col_1 and col_2 in anno
-    accept_gene <- unique(anno[duplicated(anno[,1]),1])
-    accept_gene <- anno[!(anno[,1] %in% accept_gene),1]
-    anno <- anno[anno[,1] %in% accept_gene,]
-    accept_gene <- unique(anno[duplicated(anno[,2]),2])
-    accept_gene <- anno[!(anno[,2] %in% accept_gene),2]
-    anno <- anno[anno[,2] %in% accept_gene,]
-  }
-  
-  express_matrix <- CreateSeuratObject(counts = express_matrix,project = 'temp',min.cells = 0,min.features = 0)
-  express_matrix <- express_matrix@assays$RNA@counts
-  
-  anno <- as.data.frame(anno)
-  gene <- rownames(express_matrix)
-  gene <- intersect(gene,c(as.character(anno[,1]),as.character(anno[,2])))
-  express_matrix <- express_matrix[gene,]
-  gene_converted <- c()
-  
-  for (i in gene) {
-    temp <- anno[anno[,1] == i | anno[,2] == i,]
-    if(temp[1,3] == ''){
-      gene_converted <- append(gene_converted,as.character(temp[1,4]))
-    } else{
-      gene_converted <- append(gene_converted,as.character(temp[1,3]))
-    }
-  }
-  
-  anno <- data.frame(gene = gene,gene_converted = gene_converted)
-  rownames(anno) <- anno$gene
-  gene_duplicated <- gene_converted[duplicated(gene_converted)]
-  gene_duplicated <- unique(gene_duplicated)
-  gene_unique <- gene_converted[!(gene_converted %in% gene_duplicated)]
-  gene_unique <- unique(gene_unique)
-  express_unique <- express_matrix[anno[anno$gene_converted %in% gene_unique,'gene'],]
-  rownames(express_unique) <- as.character(anno[rownames(express_unique),'gene_converted'])
-  for(i in gene_duplicated){
-    temp_gene <- as.character(anno[anno$gene_converted == i,'gene'])
-    temp_express <- express_matrix[temp_gene,]
-    temp_express <- Matrix::colSums(temp_express)
-    temp_express <- t(as.matrix(temp_express))
-    rownames(temp_express) <- i
-    express_unique <- rbind(express_unique,temp_express)
-  }
-  return(express_unique)
-}
-
-#' Scale/zscore a vector of values. Compatible with dplyr::group_by() 
-#' @param x a vector of numeric values
-scale_this <- function(x) {
-  stdev <- sd(x, na.rm=TRUE)
-  if(stdev == 0) {
-    return(0)
-  } else {
-    return((x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE))
-  }
-}
-
-#' Scale rows of a matrix (row z scores)
-#' @param mat a numeric matrix
-rowScale <- function(mat) {
-  
-  if (is.null(nrow(mat))) {
-    return(scale_this(mat))
-  }
-  
-  rn = rownames(mat)
-  cn = colnames(mat)
-  
-  out = do.call(rbind, lapply(1:nrow(mat), function(x) {
-    s = scale_this(mat[x, ])
-  }))
-  
-  rownames(out) = rn
-  colnames(out) = cn
-  
-  return(out)
-}
-
-#' Trim the extreme quantiles of a numeric matrix or vector
-#' Makes large heatmap plots more interpretable, since outlier values rescale color values
-#' for the whole heatmap
-#' @param mat a numeric matrix or vector to trim
-#' @cuts a length-2 vector of quantiles, low and high, to trim from the object 
-#' (they will be replaced by min and max respectively)
-trimQuantiles <- function(x, cuts = c(0.1,0.99)) {
-  
-  if((
-    any(is.null(x)) || 
-    any(is.na(x)) ||
-    any(is.infinite(x))
-  )) {
-    warning("Object contains non-numeric values.")
-  }
-  
-  if(sum(cuts >= 1) == 2 & sum(cuts <= 100) ==2) {
-    cuts <- cuts / 100
-  }
-  
-  quantile.cuts <- quantile(x, cuts, na.rm = T)
-  x[x < quantile.cuts[1]] <- quantile.cuts[1]
-  x[x > quantile.cuts[2]] <- quantile.cuts[2]
-  
-  return(x)
 }
 
 #' Function to plot gene expression from a seurat object
@@ -349,41 +183,6 @@ geneSetAveragePlot <- function(genes, object, object.class = "seurat", assay = '
   }
 }
 
-#' Return the proportion of different cells.
-#' @param seu.obj the seurat object
-#' @param group.by group by
-#' @param split.by split by
-My_Cell_Proportion <- function(seu.obj,group.by,split.by){
-  seu.obj@meta.data[,group.by] <- as.factor(as.character(seu.obj@meta.data[,group.by]))
-  seu.obj@meta.data[,split.by] <- as.factor(as.character(seu.obj@meta.data[,split.by]))
-  group_list <- levels(seu.obj@meta.data[,group.by])
-  orig.matrix <- matrix(nrow = 1,ncol = 3)
-  colnames(orig.matrix) <- c('Proportion',group.by,split.by)
-  orig.matrix <- as.data.frame(orig.matrix)
-  for (i in group_list){
-    temp <- seu.obj[,seu.obj@meta.data[,group.by] == i]
-    temp_orig <- table(temp@meta.data[,split.by])
-    for (j in names(temp_orig)){
-      if (temp_orig[j] == 0){
-        temp_orig[j] <- 0
-      }else{
-        temp_orig[j] <- (temp_orig[j])/sum(seu.obj@meta.data[,split.by] == j)
-      }
-    }
-    orig <- matrix(data = temp_orig,ncol = 1)
-    rownames(orig) <- names(temp_orig)
-    colnames(orig) <- 'Proportion'
-    orig <- cbind(orig,cell_type=rep(i,dim(orig)[1]))
-    orig <- as.data.frame(orig)
-    orig$Proportion <- as.numeric(as.character(orig$Proportion))
-    orig$sample <- rownames(orig)
-    colnames(orig) <- c('Proportion',group.by,split.by)
-    orig.matrix <- rbind(orig.matrix,orig)
-  }
-  orig.matrix <- orig.matrix[-1,]
-  return(orig.matrix)
-}
-
 #' origin from seurat DotPlot function
 #' @param features Input vector of features, or named list of feature vectors if feature-grouped panels are desired
 #' @param col.min Minimum scaled average expression threshold
@@ -543,113 +342,85 @@ my_dotplot <- function (object, assay = NULL, features, cols = c("lightgrey","bl
 }
 
 #' from greenleaf
-#' plot umap from uwot
-#' X can be count matrix or seurat object
-#' @param X the seurat object or express matrix to be projected on object embedding
-#' @param object the seurat object that has already been visualized by UMAP, need preprocess(normalization, scale, PCA and UMAP), do not support SCT
+#' get uwot model from seurat object
+#' @param object the seurat object to pull uwot model from
+#' @param assayUsed the assay used for umap projection in object
+#' @param reductionUsed the dim-reduction object in seurat
+getUwotModelFromSeurat <- function(object, 
+                                   assayUsed = DefaultAssay(object), 
+                                   reductionUsed = "pca", ...){
+  
+  require(uwot)
+  
+  paramL <- object@commands[[paste0("RunUMAP.",assayUsed,".",reductionUsed)]]@params
+  
+  if (is.null(paramL[["dims"]])) logger.error("Invalid dims")
+  reqParamNames <- c(
+    "n.neighbors", "n.components", "metric", "n.epochs", "learning.rate", "min.dist",
+    "spread", "set.op.mix.ratio", "local.connectivity", "repulsion.strength",
+    "negative.sample.rate", "a", "b", "uwot.sgd", "seed.use"
+  )
+  
+  # assign NULL to missing parameters
+  for (pn in reqParamNames){
+    if (!is.element(pn, names(paramL))) paramL[pn] <- list(NULL)
+  }
+  
+  X <- Embeddings(object[[reductionUsed]])[, paramL[["dims"]]]
+  
+  # make sure to use the same 'random' numbers
+  
+  if (!is.null(paramL$seed.use)) {
+    set.seed(seed = paramL$seed.use)
+  }
+  
+  umapRes <- umap(
+    X = X,
+    n_neighbors = as.integer(paramL$n.neighbors),
+    n_components = as.integer(paramL$n.components),
+    metric = paramL$metric,
+    n_epochs = paramL$n.epochs,
+    learning_rate = paramL$learning.rate,
+    min_dist = paramL$min.dist,
+    spread = paramL$spread,
+    set_op_mix_ratio = paramL$set.op.mix.ratio,
+    local_connectivity = paramL$local.connectivity,
+    repulsion_strength = paramL$repulsion.strength,
+    negative_sample_rate = paramL$negative.sample.rate,
+    a = paramL$a,
+    b = paramL$b,
+    fast_sgd = paramL$uwot.sgd,
+    ret_model=TRUE, # this is the important part
+    ...
+  )
+  
+  return(umapRes)
+}
+
+#' from greenleaf
+#' project new data on the already existed UMAP
+#' @param X_scaled the scaled express matrix to be projected on object embedding
+#' @param object the seurat object that has already been visualized by seurat_UMAP
 #' @param umap_model the uwot model used in object, set NULL to pull from object
-#' @param assayUsed the default assay, only support RNA actually
-#' @param return.object whether return the seurat object of X
+#' @param assayUsed the default assay of object
 #' @param missing_gene any missing genes in X? set TRUE and the missing gene loading value in PCA will be removed(better not)
-projectMatrix_SeuratUMAP <- function(X, 
+projectMatrix_SeuratUMAP <- function(X_scaled, 
                                      object, 
                                      umap_model = NULL,
                                      assayUsed = DefaultAssay(object), 
-                                     return.object = FALSE,
                                      missing_gene = FALSE) {
   require(Seurat)
   require(dplyr)
   require(uwot)
   
-  getUwotModelFromSeurat <- function(object, 
-                                     assayUsed = DefaultAssay(object), 
-                                     reductionUsed = "pca", ...){
-    paramL <- object@commands[[paste0("RunUMAP.",assayUsed,".",reductionUsed)]]@params
-    
-    if (is.null(paramL[["dims"]])) logger.error("Invalid dims")
-    reqParamNames <- c(
-      "n.neighbors", "n.components", "metric", "n.epochs", "learning.rate", "min.dist",
-      "spread", "set.op.mix.ratio", "local.connectivity", "repulsion.strength",
-      "negative.sample.rate", "a", "b", "uwot.sgd", "seed.use"
-    )
-    
-    # assign NULL to missing parameters
-    for (pn in reqParamNames){
-      if (!is.element(pn, names(paramL))) paramL[pn] <- list(NULL)
-    }
-    
-    X <- Embeddings(object[[reductionUsed]])[, paramL[["dims"]]]
-    
-    # make sure to use the same 'random' numbers
-    
-    if (!is.null(paramL$seed.use)) {
-      set.seed(seed = paramL$seed.use)
-    }
-    
-    umapRes <- umap(
-      X = X,
-      n_neighbors = as.integer(paramL$n.neighbors),
-      n_components = as.integer(paramL$n.components),
-      metric = paramL$metric,
-      n_epochs = paramL$n.epochs,
-      learning_rate = paramL$learning.rate,
-      min_dist = paramL$min.dist,
-      spread = paramL$spread,
-      set_op_mix_ratio = paramL$set.op.mix.ratio,
-      local_connectivity = paramL$local.connectivity,
-      repulsion_strength = paramL$repulsion.strength,
-      negative_sample_rate = paramL$negative.sample.rate,
-      a = paramL$a,
-      b = paramL$b,
-      fast_sgd = paramL$uwot.sgd,
-      ret_model=TRUE, # this is the important part
-      ...
-    )
-    
-    return(umapRes)
-  }
-  
-  paramL_norm <- object@commands[[paste0("NormalizeData.",assayUsed)]]@params
-  paramL_scale <- object@commands[[paste0("ScaleData.",assayUsed)]]@params
-  
-  if (!paramL_scale[["do.scale"]]) {
-    stop("Don't know how to deal with unscaled data yet")
-  }
-  
+  #check input
   paramL_pca <- object@commands[[paste0("RunPCA.",assayUsed)]]@params
-  paramL_umap <- object@commands[[paste0("RunUMAP.",assayUsed,".",paramL_pca[["reduction.name"]])]]@params
-  
-  seuQ <- X # query Seurat dataset
-  
-  if (class(X) != "Seurat"){
-    seuQ <- CreateSeuratObject(counts = X, project = "seuQ", assay = assayUsed)
-  }
-  
-  print(dim(seuQ))
-  
-  cat("Normalizing ...\n")
-  seuQ <- NormalizeData(
-    seuQ,
-    assay = paramL_norm$assay,
-    normalization.method = paramL_norm$normalization.method,
-    scale.factor = paramL_norm$scale.factor,
-    verbose = TRUE
-  )
-  
-  cat("Scaling ...\n")
-  seuQ <- ScaleData(
-    seuQ,
-    assay = paramL_scale$assay,
-    features = rownames(seuQ),
-    do.scale = paramL_scale$do.scale,
-    do.center = paramL_scale$do.center,
-    model.use = paramL_scale$model.use,
-    verbose = TRUE
-  )
+  reductionUsed <- paramL_pca[['reduction.name']]
+  paramL_umap <- object@commands[[paste0("RunUMAP.",assayUsed,".",reductionUsed)]]@params
   
   cat("PCA projection ...\n")
-  X <- GetAssayData(seuQ[[assayUsed]], slot="scale.data")
-  features <- rownames(object@reductions$pca@feature.loadings)
+  X <- X_scaled
+  features <- rownames(object@reductions[[reductionUsed]]@feature.loadings)
   
   if(missing_gene){
     char <- length(features)
@@ -658,38 +429,30 @@ projectMatrix_SeuratUMAP <- function(X,
     char <- paste(as.character(char),'genes missing!',sep = ' ')
     print(char)
   } else{
-    if (any(!features %in% rownames(X))){
-      stop("Could not find all features in X for the PC projection")
+    if (any(!(features %in% rownames(X)))){
+      stop("Could not find all features in X_scaled for the PC projection")
     }
   }
   
   X <- t(X[features,])
   
-  projM <- Loadings(object, reduction = paramL_pca[["reduction.name"]])
+  projM <- Loadings(object, reduction = reductionUsed)
   projM <- projM[features,]
   pcaCoord_proj <- X %*% projM
   
-  if(missing_gene){
-    pcaCoord_orig <- t(GetAssayData(object[[assayUsed]], slot="scale.data")[features,]) %*% projM
-  } else{
-    pcaCoord_orig <- Embeddings(object[[paramL_pca[["reduction.name"]]]])
-  }
+  pcaCoord_orig <- t(GetAssayData(object[[assayUsed]], slot="scale.data")[features,]) %*% projM
   
   cat("Retrieving UMAP model ...\n")
   if (is.null(umap_model)) {
-    umapRes <- getUwotModelFromSeurat(object, assayUsed=assayUsed, reductionUsed=paramL_pca[["reduction.name"]])
+    umapRes <- getUwotModelFromSeurat(object, assayUsed=assayUsed, reductionUsed=reductionUsed)
   } else {
     umapRes <- umap_model
   }
   
   cat("UMAP projection ...\n")
-  if(missing_gene){
-    umapCoord_orig <- uwot::umap_transform(pcaCoord_orig[ ,paramL_umap[["dims"]]], umapRes)
-    colnames(umapCoord_orig) <- colnames(Embeddings(object[[paramL_umap[["reduction.name"]]]]))
-    rownames(umapCoord_orig) <- rownames(pcaCoord_orig)
-  } else{
-    umapCoord_orig <- Embeddings(object[[paramL_umap[["reduction.name"]]]])
-  }
+  umapCoord_orig <- uwot::umap_transform(pcaCoord_orig[ ,paramL_umap[["dims"]]], umapRes)
+  colnames(umapCoord_orig) <- colnames(Embeddings(object[[paramL_umap[["reduction.name"]]]]))
+  rownames(umapCoord_orig) <- rownames(pcaCoord_orig)
   
   umapCoord_proj <- uwot::umap_transform(pcaCoord_proj[ ,paramL_umap[["dims"]]], umapRes)
   
@@ -703,92 +466,7 @@ projectMatrix_SeuratUMAP <- function(X,
     umapCoord_orig=umapCoord_orig
   )
   
-  if (return.object == TRUE) {
-    s.out <- list(objectrat = seuQ)
-    res <- append(res, s.out)
-  }
-  
   return(res)
-}
-
-#' create a KNN object describe the distance between query and data
-#' the same parameter as RANN::nn2
-My_FindKNN <- function (data,query,k=min(10,nrow(data)),treetype = c("kd","bd"),
-                        searchtype = c("standard", "priority", "radius"),radius = 0,eps = 0) {
-  require(RANN)
-  nearest <- RANN::nn2(data = data,query = query,k = k,treetype = treetype,searchtype = searchtype,radius = radius,eps = eps)
-  nearest$nn.cell <- base::apply(nearest$nn.idx,2,function(idx){return(rownames(data)[idx])})
-  rownames(nearest$nn.idx) <- rownames(query)
-  rownames(nearest$nn.dists) <- rownames(query)
-  rownames(nearest$nn.cell) <- rownames(query)
-  return(nearest)
-}
-
-#' A function to sample nearest neighbors of a particular cell
-#' 
-#' Takes a cell ID or index, and a KNN object (output from My_FindKNN), 
-#' and returns a specified number of cells that are nearest neighbors of that 
-#' cell. Cell selection can be biased according to a function of the cell-cell
-#' distances (FUN). If no cell sampled, return 'unknown'.
-#' @param cell A cell ID or idx
-#' @param knn.object An S4 object with names nn.idx, nn.cells, and nn.dists, providing NN info
-#' @param N The number of cells to sample
-#' @param FUN A quoted string, which evaluates to an expression for weighting the probability of randomly selecting cells. Allows you to weight by distance for example. Make sure FUN(Inf) = 0.
-#' @param output String, either 'name' or not, which specifies whether cell IDs or numerical cell index to be used
-#' @param replace same as replace parameter in sample function(allow duplicate?)
-sampleNearestNeighbors <- function(cell, 
-                                   knn.object, 
-                                   N=50, 
-                                   FUN="(1/exp(dists))*(1/sum(1/exp(dists)))",
-                                   output='name',replace=FALSE) {
-  
-  
-  if (output == 'name') {
-    cells <- knn.object[['nn.cell']][cell, ]
-  }
-  else {
-    cells <- knn.object[['nn.idx']][cell, ]
-  }
-  
-  dists <- knn.object[['nn.dists']][cell, ]
-  
-  if(sum(dists == Inf) == length(dists)){
-    res <- rep(x = 'unknown',N)
-  } else{
-    res <- sample(
-      x = cells, 
-      size = N, 
-      replace = replace, 
-      prob = eval(parse(text = FUN))
-    )
-  }
-  
-  return(res)
-  
-}
-
-#' Grab genes from a particular gene ontology
-#' Wrapped around 'clusterProfiler'
-#' 
-#' @param x GO path ID
-#' @param OrgDb e.g. 'org.Hs.eg.db' database
-#' @param ont ontology to use
-#' @param keytype symbol? Entrez?
-getGOgeneSet <- function(x, 
-                         OrgDb = "org.Hs.eg.db", 
-                         ont = "BP", 
-                         keytype = "SYMBOL") {
-  require(clusterProfiler)
-  goObj <- clusterProfiler:::get_GO_data(OrgDb=OrgDb, ont=ont, keytype=keytype)
-  mapObj <- goObj$PATHID2EXTID
-  
-  if (!is.element(x, names(mapObj))){
-    tt <- names(goObj$PATHID2NAME)
-    names(tt) <- goObj$PATHID2NAME
-    x <- tt[x]
-  }
-  
-  return(sort(unique(mapObj[[x]])))
 }
 
 #' add gene module score
@@ -1033,16 +711,6 @@ my_harmony_integration <- function(named_seurat_list,
   return(seurat_obj)
 }
 
-#' return confusion matrix based on original label and predicted label.
-#' @param ori the original label vector.
-#' @param prd the predicted label vector.
-my_confusion_matrix <- function(ori, prd){
-  cross.validation.filt <- tibble(ori = ori, prd = prd) %>% dplyr::count(ori, prd) %>% tidyr::spread(key = prd, value = n)
-  cross.validation.filt[is.na(cross.validation.filt)] <- 0
-  cross.validation.filt <- cross.validation.filt %>% tidyr::gather(key = "prd", value = "value", -ori) %>% filter(value > 0)
-  return(cross.validation.filt)
-}
-
 #' Using low dimension graph( like PCA, NMF, CCA and so on ) to create mutual nearest neighbor graph between data and query.
 #' Return the probability label matrix of query calculated by mnn graph and the corresponding label in data.
 #' @param data The reference seurat object.
@@ -1273,4 +941,320 @@ my_KNN_label_transfer <- function(data,query,reference_var,reduction='pca',knn=5
   }else{
     return(predict_matrix)
   }
+}
+
+# liger related -----------------------------------------------------------
+
+#' suggest k and lambda for NMF in liger
+#' @param object the liger object
+#' @param lambda the range of lambda to be tested
+#' @param k the range of k to be tested
+#' @param parl_num the number of cores to be used
+#' @param library_path your library path for .libPaths()
+#' @param pic_path the path to store the picture results
+#' some default parameters, usually no need to change
+MySuggestLiger <- function(object,lambda,k,parl_num,library_path,pic_path,
+                           knn_k = 20,quantiles = 50,min_cells = 20,do.center = FALSE,
+                           max_sample = 1000,refine.knn = TRUE,eps = 0.9,resolution = 0.4,min_dist = 0.1){
+  require(rliger)
+  require(parallel)
+  
+  test_lambda <- c()
+  test_k <- c()
+  for(i in lambda){
+    for(j in k){
+      test_lambda <- append(test_lambda,i)
+      test_k <- append(test_k,j)
+    }
+  }
+  
+  cl <- makeCluster(parl_num)
+  clusterExport(cl,c('library_path','pic_path','test_lambda','test_k','object','knn_k','quantiles','min_cells','do.center','max_sample','refine.knn','eps','resolution','min_dist'),envir = environment())
+  clusterEvalQ(cl,.libPaths(library_path))
+  clusterEvalQ(cl,library(rliger))
+  alignment_score <- parLapply(cl = cl,1:length(test_lambda),function(x){
+    lambda <- test_lambda[x]
+    k <- test_k[x]
+    object <- optimizeALS(object,lambda = lambda,k = k)
+    #Quantile Normalization and Joint Clustering
+    object <- quantile_norm(object,knn_k = knn_k,quantiles = quantiles,min_cells = min_cells,do.center = do.center,max_sample = max_sample,refine.knn = refine.knn,eps = eps)
+    object <- louvainCluster(object,resolution = resolution)
+    object <- runUMAP(object,distance = 'cosine',min_dist = min_dist)
+    all.plots <- plotByDatasetAndCluster(object, axis.labels = c('UMAP 1', 'UMAP 2'), return.plots = T)
+    char <- paste('lambda',as.character(lambda),'k',as.character(k),sep = '_')
+    char <- paste(pic_path,char,sep = '/')
+    char <- paste(char,'pdf',sep = '.')
+    pdf(file = char,width = 12,height = 6)
+    print(all.plots[[1]] + all.plots[[2]])
+    dev.off()
+    return(0)
+  })
+  stopCluster(cl)
+  return('done')
+}
+
+# utility -----------------------------------------------------------------
+
+#' homologous gene express convert
+#' @param express_matrix express matrix need to be a table.
+#' @param anno the annotation table.
+#' @param filter_anno whether to filter the duplicated rows in col_1 and col_2 of anno,
+#' useful when same gene in specie 1 (convert from) can be converted to several different gene names in species 2 (to converte to).
+#' @param future.globals.maxSize The max size of objects used in paralleled computation, default is 2GB.
+#' @param workers How many cores to be used for computation? Default use all cores.
+#' note the annotation need 4 cols, which are gene name and gene id for the species to be converted and the species to convert to
+My_Convert_Homology_Gene_ID <- function(express_matrix,anno,filter_anno = TRUE,future.globals.maxSize = 2*(1024^3),workers = NULL){
+  require(dplyr)
+  require(Matrix)
+  require(Seurat)
+  require(future.apply)
+  
+  options(future.globals.maxSize = future.globals.maxSize)
+  if(is.null(workers)){
+    workers <- future::availableCores()
+  }
+  anno <- as.data.frame(as.matrix(anno),stringsAsFactors = FALSE)
+  gene_pair <- paste(anno[,1],anno[,2],sep = '_')
+  duplicated_pair <- unique(gene_pair[duplicated(gene_pair)])
+  anno <- anno[!(gene_pair %in% duplicated_pair),]
+  
+  if(filter_anno){
+    #filter duplicate from col_1 and col_2 in anno
+    accept_gene <- unique(anno[duplicated(anno[,1]),1])
+    accept_gene <- anno[!(anno[,1] %in% accept_gene),1]
+    anno <- anno[anno[,1] %in% accept_gene,]
+    accept_gene <- unique(anno[duplicated(anno[,2]),2])
+    accept_gene <- anno[!(anno[,2] %in% accept_gene),2]
+    anno <- anno[anno[,2] %in% accept_gene,]
+  }
+  
+  #create express matrix
+  express_matrix <- SeuratObject::as.sparse(express_matrix)
+  print('create sparse matrix done!')
+  gc()
+  
+  #filter genes not in anno and express matrix
+  gene <- rownames(express_matrix)
+  gene <- dplyr::intersect(gene,c(as.character(anno[,1]),as.character(anno[,2])))
+  express_matrix <- express_matrix[gene,]
+  anno <- anno[(as.character(anno[,1]) %in% gene) | (as.character(anno[,2]) %in% gene),]
+  
+  #modify the annotation
+  anno[is.na(anno[,3]) | (anno[,3] == ''),3] <- as.character(anno[is.na(anno[,3]) | (anno[,3] == ''),4])
+  anno <- anno[(!(is.na(anno[,3]))) & (!(anno[,3] == '')),]
+  gene_converted <- unique(anno[,3])
+  print('modify annotation done!')
+  gc()
+  
+  #convert
+  col_name <- colnames(express_matrix)
+  plan(multisession,workers = workers)
+  express_matrix <- do.call(rbind,future_lapply(gene_converted,function(x){
+    raw_gene <- dplyr::union(anno[anno[,3] == x,1],anno[anno[,3] == x,2])
+    raw_gene <- raw_gene[(!is.na(raw_gene)) & (!(raw_gene == ''))]
+    raw_gene <- dplyr::intersect(rownames(express_matrix),raw_gene)
+    if(length(raw_gene) == 0){
+      stop('something wrong when converting!')
+    } else if(length(raw_gene) == 1){
+      return(as.numeric(express_matrix[raw_gene,]))
+    } else{
+      return(as.numeric(colSums(express_matrix[raw_gene,])))
+    }
+  }))
+  plan(sequential)
+  gc()
+  rownames(express_matrix) <- gene_converted
+  colnames(express_matrix) <- col_name
+  print('convert done!')
+  
+  #output
+  express_matrix <- SeuratObject::as.sparse(express_matrix)
+  gc()
+  return(express_matrix)
+}
+
+#' Scale/zscore a vector of values. Compatible with dplyr::group_by() 
+#' @param x a vector of numeric values
+scale_this <- function(x) {
+  stdev <- sd(x, na.rm=TRUE)
+  if(stdev == 0) {
+    return(0)
+  } else {
+    return((x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE))
+  }
+}
+
+#' Scale rows of a matrix (row z scores)
+#' @param mat a numeric matrix
+rowScale <- function(mat) {
+  
+  if (is.null(nrow(mat))) {
+    return(scale_this(mat))
+  }
+  
+  rn = rownames(mat)
+  cn = colnames(mat)
+  
+  out = do.call(rbind, lapply(1:nrow(mat), function(x) {
+    s = scale_this(mat[x, ])
+  }))
+  
+  rownames(out) = rn
+  colnames(out) = cn
+  
+  return(out)
+}
+
+#' Trim the extreme quantiles of a numeric matrix or vector
+#' Makes large heatmap plots more interpretable, since outlier values rescale color values
+#' for the whole heatmap
+#' @param mat a numeric matrix or vector to trim
+#' @cuts a length-2 vector of quantiles, low and high, to trim from the object 
+#' (they will be replaced by min and max respectively)
+trimQuantiles <- function(x, cuts = c(0.1,0.99)) {
+  
+  if((
+    any(is.null(x)) || 
+    any(is.na(x)) ||
+    any(is.infinite(x))
+  )) {
+    warning("Object contains non-numeric values.")
+  }
+  
+  if(sum(cuts >= 1) == 2 & sum(cuts <= 100) ==2) {
+    cuts <- cuts / 100
+  }
+  
+  quantile.cuts <- quantile(x, cuts, na.rm = T)
+  x[x < quantile.cuts[1]] <- quantile.cuts[1]
+  x[x > quantile.cuts[2]] <- quantile.cuts[2]
+  
+  return(x)
+}
+
+#' Return the proportion of different cells.
+#' @param meta_data the meta data table, each row is a different cell, each col is a different feature.
+#' @param group.by group by which col in meta data table?
+#' @param split.by split by which col in meta data table?
+My_Cell_Proportion <- function(meta_data,group.by,split.by){
+  
+  require(dplyr)
+  
+  #check input
+  if(!((group.by %in% colnames(meta_data)) & (split.by %in% colnames(meta_data)))){
+    stop('missing colnames in meta_data!')
+  }
+  
+  #group list and split list
+  meta_data[,group.by] <- as.factor(as.character(meta_data[,group.by]))
+  meta_data[,split.by] <- as.factor(as.character(meta_data[,split.by]))
+  group_list <- levels(meta_data[,group.by])
+  split_list <- levels(meta_data[,split.by])
+  full_list <- list(group=rep(group_list,times = length(split_list)),split=rep(split_list,each = length(group_list)))
+  
+  #calculate
+  proportion_matrix <- do.call(rbind,base::lapply(1:length(full_list$group),FUN = function(x){
+    numerator <- sum((as.character(meta_data[,group.by]) == full_list$group[x]) & (as.character(meta_data[,split.by]) == full_list$split[x]))
+    denominator <- sum((as.character(meta_data[,split.by]) == full_list$split[x]))
+    if(denominator == 0){
+      stop('denominator can not be zero, something wrong!')
+    }
+    return(c(numerator/denominator,full_list$group[x],full_list$split[x]))
+  }))
+  colnames(proportion_matrix) <- c('Proportion',group.by,split.by)
+  proportion_matrix <- as.data.frame(proportion_matrix,stringsAsFactors = FALSE)
+  proportion_matrix$Proportion <- as.numeric(proportion_matrix$Proportion)
+  gc()
+  return(proportion_matrix)
+}
+
+#' create a KNN object describe the distance between query and data
+#' the same parameter as RANN::nn2
+My_FindKNN <- function (data,query,k=min(10,nrow(data)),treetype = c("kd","bd"),
+                        searchtype = c("standard", "priority", "radius"),radius = 0,eps = 0) {
+  require(RANN)
+  nearest <- RANN::nn2(data = data,query = query,k = k,treetype = treetype,searchtype = searchtype,radius = radius,eps = eps)
+  nearest$nn.cell <- base::apply(nearest$nn.idx,2,function(idx){return(rownames(data)[idx])})
+  rownames(nearest$nn.idx) <- rownames(query)
+  rownames(nearest$nn.dists) <- rownames(query)
+  rownames(nearest$nn.cell) <- rownames(query)
+  return(nearest)
+}
+
+#' A function to sample nearest neighbors of a particular cell
+#' 
+#' Takes a cell ID or index, and a KNN object (output from My_FindKNN), 
+#' and returns a specified number of cells that are nearest neighbors of that 
+#' cell. Cell selection can be biased according to a function of the cell-cell
+#' distances (FUN). If no cell sampled, return 'unknown'.
+#' @param cell A cell ID or idx
+#' @param knn.object An S4 object with names nn.idx, nn.cells, and nn.dists, providing NN info
+#' @param N The number of cells to sample
+#' @param FUN A quoted string, which evaluates to an expression for weighting the probability of randomly selecting cells. Allows you to weight by distance for example. Make sure FUN(Inf) = 0.
+#' @param output String, either 'name' or not, which specifies whether cell IDs or numerical cell index to be used
+#' @param replace same as replace parameter in sample function(allow duplicate?)
+sampleNearestNeighbors <- function(cell, 
+                                   knn.object, 
+                                   N=50, 
+                                   FUN="(1/exp(dists))*(1/sum(1/exp(dists)))",
+                                   output='name',replace=FALSE) {
+  
+  
+  if (output == 'name') {
+    cells <- knn.object[['nn.cell']][cell, ]
+  }
+  else {
+    cells <- knn.object[['nn.idx']][cell, ]
+  }
+  
+  dists <- knn.object[['nn.dists']][cell, ]
+  
+  if(sum(dists == Inf) == length(dists)){
+    res <- rep(x = 'unknown',N)
+  } else{
+    res <- sample(
+      x = cells, 
+      size = N, 
+      replace = replace, 
+      prob = eval(parse(text = FUN))
+    )
+  }
+  
+  return(res)
+  
+}
+
+#' Grab genes from a particular gene ontology
+#' Wrapped around 'clusterProfiler'
+#' 
+#' @param x GO path ID
+#' @param OrgDb e.g. 'org.Hs.eg.db' database
+#' @param ont ontology to use
+#' @param keytype symbol? Entrez?
+getGOgeneSet <- function(x, 
+                         OrgDb = "org.Hs.eg.db", 
+                         ont = "BP", 
+                         keytype = "SYMBOL") {
+  require(clusterProfiler)
+  goObj <- clusterProfiler:::get_GO_data(OrgDb=OrgDb, ont=ont, keytype=keytype)
+  mapObj <- goObj$PATHID2EXTID
+  
+  if (!is.element(x, names(mapObj))){
+    tt <- names(goObj$PATHID2NAME)
+    names(tt) <- goObj$PATHID2NAME
+    x <- tt[x]
+  }
+  
+  return(sort(unique(mapObj[[x]])))
+}
+
+#' return confusion matrix based on original label and predicted label.
+#' @param ori the original label vector.
+#' @param prd the predicted label vector.
+my_confusion_matrix <- function(ori, prd){
+  require(dplyr)
+  cross.validation.filt <- tibble(ori = ori, prd = prd) %>% dplyr::count(ori, prd) %>% tidyr::spread(key = prd, value = n)
+  cross.validation.filt[is.na(cross.validation.filt)] <- 0
+  cross.validation.filt <- cross.validation.filt %>% tidyr::gather(key = "prd", value = "value", -ori) %>% filter(value > 0)
+  return(cross.validation.filt)
 }
