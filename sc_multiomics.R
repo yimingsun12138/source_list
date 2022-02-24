@@ -943,6 +943,78 @@ my_KNN_label_transfer <- function(data,query,reference_var,reduction='pca',knn=5
   }
 }
 
+#' Find label transfer anchor from low dim graph, modified from Seurat::FindTransferAnchors.
+#' @param reference reference seurat object.
+#' @param query query seurat object.
+#' @param ref_reduction name of DimReducObject used for anchor creating in reference.
+#' @param query_reduction name of DimReducObject used for anchor creating in query.
+#' @param ref_assay name of assay used for anchor creating in reference.
+#' @param query_assay name of assay used for anchor creating in query.
+#' @param l2.norm whether perform L2 normalization on the cell embedding.
+#' @param dims which dimensions to use from the DimReducObject to specify the neighbor search space.
+#' @param features features used to create dimreduction object in reference and query, set NULL as default.
+#' @param k.anchor how many neighbors (k) to use when finding anchors.
+#' @param k.score how many neighbors (k) to use when scoring anchors.
+#' @param nn.method method for nearest neighbor finding. Options include: rann, annoy.
+#' @param n.trees more trees gives higher precision when using annoy approximate nearest neighbor search.
+#' @param eps error bound on the neighbor finding algorithm (from RANN or RcppAnnoy).
+#' @param verbose print progress bars and output.
+my_FindTransferAnchors <- function(reference,query,ref_reduction = 'pca',query_reduction = 'pca',
+                                   ref_assay = 'RNA',query_assay = 'RNA',l2.norm = TRUE,dims = 1:30,features = NULL,
+                                   k.anchor = 5,k.score = 30,nn.method = "annoy",n.trees = 50,eps = 0,verbose = TRUE){
+  require(Seurat)
+  require(dplyr)
+  
+  #check input
+  if((dim(reference@reductions[[ref_reduction]]@cell.embeddings)[2] < max(dims)) | (dim(query@reductions[[query_reduction]]@cell.embeddings)[2] < max(dims))){
+    stop("dims exceed!")
+  }
+  
+  #diet query and reference
+  reference <- Seurat::DietSeurat(object = reference,counts = TRUE,data = TRUE,scale.data = TRUE,
+                                  features = NULL,assays = ref_assay,dimreducs = ref_reduction)
+  query <- Seurat::DietSeurat(object = query,counts = TRUE,data = TRUE,scale.data = TRUE,
+                              features = NULL,assays = query_assay,dimreducs = query_reduction)
+  
+  #rename cells
+  reference <- Seurat::RenameCells(object = reference,new.names = paste(colnames(reference),'reference',sep = '_'))
+  query <- Seurat::RenameCells(object = query,new.names = paste(colnames(query),'query',sep = '_'))
+  
+  #combine reference and query dimreduction object
+  reference_embedding <- reference@reductions[[ref_reduction]]@cell.embeddings[,dims]
+  query_embedding <- query@reductions[[query_reduction]]@cell.embeddings[,dims]
+  combined_embedding <- CreateDimReducObject(embeddings = as.matrix(rbind(reference_embedding,query_embedding)),assay = ref_assay,key = 'ProjectPC_')
+  
+  #create combined seurat object
+  combined_object <- merge(x = Seurat::DietSeurat(object = reference,counts = TRUE,data = TRUE,scale.data = FALSE,features = NULL,assays = ref_assay,dimreducs = NULL,graphs = NULL),
+                           y = Seurat::DietSeurat(object = query,counts = TRUE,data = TRUE,scale.data = FALSE,features = NULL,assays = query_assay,dimreducs = NULL,graphs = NULL))
+  combined_object[['pcaproject']] <- combined_embedding
+  reduction <- 'pcaproject'
+  
+  #l2.norm
+  if(l2.norm){
+    combined_object <- Seurat::L2Dim(object = combined_object,reduction = reduction)
+    reduction <- paste0(reduction,".l2")
+  }
+  
+  #prepare anchor finding
+  precomputed.neighbors <- list(ref.neighbors = NULL,query.neighbors = NULL)
+  reduction.2 <- character()
+  
+  #find anchor
+  anchors <- Seurat:::FindAnchors(object.pair = combined_object,assay = c(ref_assay,query_assay),
+                                  cells1 = colnames(x = reference),cells2 = colnames(x = query),reduction = reduction,
+                                  reduction.2 = reduction.2,internal.neighbors = precomputed.neighbors,
+                                  dims = 1:length(x = dims),k.anchor = k.anchor,k.filter = NA,
+                                  k.score = k.score,nn.method = nn.method,n.trees = n.trees,
+                                  nn.idx1 = NULL, nn.idx2 = NULL,eps = eps,verbose = verbose)
+  
+  anchor.set <- new(Class = "TransferAnchorSet",object.list = list(combined_object),
+                    reference.cells = colnames(x = reference),query.cells = colnames(x = query),
+                    anchors = anchors,anchor.features = features,command = NULL)
+  return(anchor.set)
+}
+
 # liger related -----------------------------------------------------------
 
 #' suggest k and lambda for NMF in liger
