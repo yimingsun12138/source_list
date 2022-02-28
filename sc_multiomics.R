@@ -1015,6 +1015,41 @@ my_FindTransferAnchors <- function(reference,query,ref_reduction = 'pca',query_r
   return(anchor.set)
 }
 
+#' dimplot modified from Seurat dimplot, only need the embedding matrix and the meta data.
+#' @param embedding the embedding matrix used to create the dimplot.
+#' @param meta_data additional cell-level metadata to add to the Seurat object.
+#' @param group.by name of one or more metadata columns to group (color) cells by.
+#' @param split.by name of a metadata column to split plot by.
+#' @param label whether to label the clusters.
+#' @param repel repel labels.
+#' @param ... extra parameters passed to DimPlot.
+my_dimplot <- function(embedding,meta_data,group.by = NULL,split.by = NULL,label = TRUE,repel = TRUE,...){
+  
+  require(Seurat)
+  
+  #check input
+  if(sum(!(rownames(embedding) == rownames(meta_data))) > 0){
+    stop('embedding and meta_data not match!')
+  }
+  
+  embedding <- as.matrix(embedding)
+  meta_data <- as.data.frame(meta_data)
+  
+  #create counts
+  counts <- matrix(ncol = dim(embedding)[1],nrow = 5,data = 1)
+  rownames(counts) <- c('gene1','gene2','gene3','gene4','gene5')
+  colnames(counts) <- rownames(embedding)
+  
+  #create seurat object
+  counts <- Seurat::CreateSeuratObject(counts = counts,project = 'temp',assay = 'RNA',meta.data = meta_data,min.cells = 0,min.features = 0)
+  temp <- Seurat::CreateDimReducObject(embeddings = embedding,assay = 'RNA',key = 'UMAP_')
+  counts[['UMAP']] <- temp
+  
+  #use dimplot
+  p <- DimPlot(object = counts,group.by = group.by,split.by = split.by,label = label,repel = repel,...)
+  return(p)
+}
+
 # liger related -----------------------------------------------------------
 
 #' suggest k and lambda for NMF in liger
