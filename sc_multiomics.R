@@ -568,9 +568,6 @@ my_process_seurat <- function(object,assay='RNA',reduction.name='pca',variable.f
 #' @param reference_dataset (Advanced Usage) Defines reference dataset(s). Cells that have batch variables values matching reference_dataset will not be moved.
 #' @param UMAP_dim the pca embedding dims used to create UMAP, default is 30.
 #' @param resolution seurat find cluster resolution.
-#' @param kmeans_init_nstart In kmeans cluster, if centers is a number, how many random sets should be chosen?
-#' @param kmeans_init_iter_max In kmeans cluster, the maximum number of iterations allowed.
-#' @param yiming_harmony library path store the yiming modified harmony package.
 my_harmony_integration <- function(named_seurat_list,
                                    assay='RNA',
                                    variable_feature,
@@ -581,13 +578,10 @@ my_harmony_integration <- function(named_seurat_list,
                                    max.iter.harmony=10,
                                    lambda=1,theta=2,sigma=0.1,
                                    reference_dataset=NULL,
-                                   UMAP_dim=30,resolution=1,
-                                   kmeans_init_nstart=10,
-                                   kmeans_init_iter_max=25,
-                                   yiming_harmony='/data/User/sunym/software/R_lib/yiming_harmony_R_4.1.1/'){
+                                   UMAP_dim=30,resolution=1,...){
   require(Seurat)
   require(dplyr)
-  require(harmony,lib.loc = yiming_harmony)
+  require(harmony)
   
   for (i in names(named_seurat_list)) {
     DefaultAssay(named_seurat_list[[i]]) <- assay
@@ -668,9 +662,7 @@ my_harmony_integration <- function(named_seurat_list,
     max.iter.harmony = max.iter.harmony,
     plot_convergence = FALSE,
     lambda = lambda,theta=theta,sigma=sigma,
-    reference_values=reference_dataset,
-    kmeans_init_nstart=kmeans_init_nstart,
-    kmeans_init_iter_max=kmeans_init_iter_max
+    reference_values=reference_dataset,...
   )
   
   #create seurat object
