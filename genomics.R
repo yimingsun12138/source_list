@@ -9,8 +9,8 @@
 #' @param ori_GRanges the original peakset to be lifted over, must be a GRanges object.
 #' @param UCSC_liftOver_path the path of UCSC liftOver tools.
 #' @param chain_file the path of UCSC genome chain file.
-#' @param liftOver_mismatch minimum ratio of bases that must remap by USCS liftOver.
-#' @param length_mismatch the maximum ratio of the length difference between the new peak and the original peak.
+#' @param liftOver_mismatch maximum ratio of bases that fail to remap by USCS liftOver.
+#' @param length_mismatch maximum ratio of the length difference between the new peak and the original peak.
 #' @param mapped_chr among which chromosomes should the original peakset be lifted over to?
 #' @param tmp_path the temp file path.
 my_unique_peakset_liftover <- function(ori_GRanges,
