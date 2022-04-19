@@ -159,3 +159,83 @@ my_bedtools_merge <- function(peakset_x,
   print(summary(peakset@ranges@width))
   return(peakset)
 }
+
+#' a reimplementation of rtracklayer liftOver.
+#' @param ori_GRanges the original peakset to be lifted over, must be a GRanges object.
+#' @param chain_file the path of UCSC genome chain file.
+#' @param merge whether merge the lifted peak pieces into a single one peak?
+#' @param workers How many cores to be used for computation? Default use all cores.
+#' @param future.globals.maxSize The max size of objects used in paralleled computation, default is 2GB.
+my_rtracklayer_liftOver <- function(ori_GRanges,
+                                    chain_file,
+                                    merge = TRUE,
+                                    workers = NULL,
+                                    future.globals.maxSize = 2*(1024^3)){
+  
+  #load library
+  require(rtracklayer)
+  require(GenomicRanges)
+  require(future.apply)
+  require(future)
+  
+  #check input
+  if(class(ori_GRanges) != 'GRanges'){
+    stop('ori_GRanges has to be GRanges object!')
+  }
+  if(!(file.exists(chain_file))){
+    stop('chain_file do not exists')
+  }
+  
+  options(future.globals.maxSize = future.globals.maxSize)
+  if(is.null(workers)){
+    workers <- future::availableCores()
+  }
+  
+  #rename ori_GRanges
+  ori_GRanges <- GenomicRanges::GRanges(seqnames = ori_GRanges@seqnames,ranges = ori_GRanges@ranges,strand = ori_GRanges@strand)
+  names(ori_GRanges) <- paste(ori_GRanges@seqnames,as.character(ori_GRanges@ranges),sep = '-')
+  
+  #load chain_file
+  chain_file <- rtracklayer::import.chain(con = chain_file)
+  
+  #lift over
+  if(merge){
+    mapped_GRanges <- rtracklayer::liftOver(x = ori_GRanges,chain = chain_file)
+    plan(multisession,workers = workers)
+    mapped_GRanges <- future.apply::future_lapply(X = names(mapped_GRanges),FUN = function(x){
+      temp <- mapped_GRanges[[x]]
+      
+      #whether fail to remap
+      if(length(temp) == 0){
+        return(NULL)
+      }
+      
+      temp <- rtracklayer::as.data.frame(temp)
+      
+      #whether remap on different chromosomes
+      if(length(unique(as.character(temp$seqnames))) != 1){
+        return(NULL)
+      }
+      
+      start_idx <- min(c(temp$start,temp$end))
+      end_idx <- max(c(temp$start,temp$end))
+      temp <- paste0(unique(as.character(temp$seqnames)),':',start_idx,'-',end_idx)
+      temp <- as(temp,'GRanges')
+      temp$ori_peak <- x
+      return(temp)
+    })
+    plan(sequential)
+    mapped_GRanges <- unlist(mapped_GRanges)
+    mapped_GRanges <- as(mapped_GRanges,'GRangesList')
+    mapped_GRanges <- unlist(mapped_GRanges)
+    names(mapped_GRanges) <- NULL
+    gc()
+    return(mapped_GRanges)
+  }else{
+    mapped_GRanges <- rtracklayer::liftOver(x = ori_GRanges,chain = chain_file)
+    mapped_GRanges <- unlist(mapped_GRanges)
+    mapped_GRanges$ori_peak <- names(mapped_GRanges)
+    names(mapped_GRanges) <- NULL
+    return(mapped_GRanges)
+  }
+}
