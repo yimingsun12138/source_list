@@ -62,14 +62,10 @@ my_unique_peakset_liftover <- function(ori_GRanges,
   }
   print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
   
-  #filter
+  #chr filter
   print('')
   print('chr filter...')
   mapped_GRanges <- mapped_GRanges[as.character(mapped_GRanges@seqnames) %in% mapped_chr]
-  print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
-  print('')
-  print('overlapped peak filter...')
-  mapped_GRanges <- mapped_GRanges[GenomicRanges::countOverlaps(query = mapped_GRanges,subject = mapped_GRanges) == 1]
   print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
   
   #length filter
@@ -88,6 +84,12 @@ my_unique_peakset_liftover <- function(ori_GRanges,
   print(temp)
   delta_length <- c(abs(delta_length) <= length_mismatch)
   mapped_GRanges <- mapped_GRanges[delta_length]
+  print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  
+  #overlap filter
+  print('')
+  print('overlapped peak filter...')
+  mapped_GRanges <- mapped_GRanges[GenomicRanges::countOverlaps(query = mapped_GRanges,subject = mapped_GRanges) == 1]
   print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
   
   #return data
