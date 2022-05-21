@@ -231,6 +231,7 @@ my_rtracklayer_liftOver <- function(ori_GRanges,
     mapped_GRanges <- as(mapped_GRanges,'GRanges')
     mapped_GRanges$ori_peak <- names(mapped_GRanges)
     names(mapped_GRanges) <- NULL
+    gc()
     return(mapped_GRanges)
   }else{
     mapped_GRanges <- rtracklayer::liftOver(x = ori_GRanges,chain = chain_file)
