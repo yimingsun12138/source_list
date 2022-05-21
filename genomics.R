@@ -203,8 +203,9 @@ my_rtracklayer_liftOver <- function(ori_GRanges,
   #lift over
   if(merge){
     mapped_GRanges <- rtracklayer::liftOver(x = ori_GRanges,chain = chain_file)
+    ori_peak <- names(mapped_GRanges)
     plan(multisession,workers = workers)
-    mapped_GRanges <- future.apply::future_lapply(X = names(mapped_GRanges),FUN = function(x){
+    mapped_GRanges <- future.apply::future_lapply(X = ori_peak,FUN = function(x){
       temp <- mapped_GRanges[[x]]
       
       #whether fail to remap
@@ -222,20 +223,18 @@ my_rtracklayer_liftOver <- function(ori_GRanges,
       start_idx <- min(c(temp$start,temp$end))
       end_idx <- max(c(temp$start,temp$end))
       temp <- paste0(unique(as.character(temp$seqnames)),':',start_idx,'-',end_idx)
-      temp <- as(temp,'GRanges')
-      temp$ori_peak <- x
       return(temp)
     })
     plan(sequential)
-    mapped_GRanges <- unlist(mapped_GRanges)
-    mapped_GRanges <- as(mapped_GRanges,'GRangesList')
-    mapped_GRanges <- unlist(mapped_GRanges)
+    names(mapped_GRanges) <- ori_peak
+    mapped_GRanges <- base::unlist(x = mapped_GRanges,use.names = TRUE)
+    mapped_GRanges <- as(mapped_GRanges,'GRanges')
+    mapped_GRanges$ori_peak <- names(mapped_GRanges)
     names(mapped_GRanges) <- NULL
-    gc()
     return(mapped_GRanges)
   }else{
     mapped_GRanges <- rtracklayer::liftOver(x = ori_GRanges,chain = chain_file)
-    mapped_GRanges <- unlist(mapped_GRanges)
+    mapped_GRanges <- base::unlist(x = mapped_GRanges,use.names = TRUE)
     mapped_GRanges$ori_peak <- names(mapped_GRanges)
     names(mapped_GRanges) <- NULL
     return(mapped_GRanges)
