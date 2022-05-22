@@ -1,7 +1,7 @@
 ###################################################
 ## Project: genomics                             ##
 ## Script Purpose: collect the function I wrote  ##
-## Data: 2022.04.10                              ##
+## Data: 2022.05.22                              ##
 ## Author: Yiming Sun                            ##
 ###################################################
 
@@ -10,15 +10,21 @@
 #' @param UCSC_liftOver_path the path of UCSC liftOver tools.
 #' @param chain_file the path of UCSC genome chain file.
 #' @param liftOver_mismatch maximum ratio of bases that fail to remap by USCS liftOver.
+#' @param length_filter whether do the length filter, default is TRUE.
 #' @param length_mismatch maximum ratio of the length difference between the new peak and the original peak.
+#' @param chr_filter whether do the chr filter, default is TRUE.
 #' @param mapped_chr among which chromosomes should the original peakset be lifted over to?
+#' @param overlap_filter whether do the overlap filter, default is TRUE.
 #' @param tmp_path the temp file path.
 my_unique_peakset_liftover <- function(ori_GRanges,
                                        UCSC_liftOver_path,
                                        chain_file,
                                        liftOver_mismatch = 0.1,
+                                       length_filter = TRUE,
                                        length_mismatch = 0.1,
+                                       chr_filter = TRUE,
                                        mapped_chr,
+                                       overlap_filter = TRUE,
                                        tmp_path){
   
   #load library
@@ -46,6 +52,7 @@ my_unique_peakset_liftover <- function(ori_GRanges,
   }
   
   #rename ori_GRanges
+  ori_GRanges <- GRanges(seqnames = ori_GRanges@seqnames,ranges = ori_GRanges@ranges,strand = ori_GRanges@strand)
   temp <- paste(ori_GRanges@seqnames,as.character(ori_GRanges@ranges),sep = '-')
   names(ori_GRanges) <- temp
   char <- paste(tmp_path,'ori_peakset.bed',sep = '/')
@@ -63,34 +70,40 @@ my_unique_peakset_liftover <- function(ori_GRanges,
   print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
   
   #chr filter
-  print('')
-  print('chr filter...')
-  mapped_GRanges <- mapped_GRanges[as.character(mapped_GRanges@seqnames) %in% mapped_chr]
-  print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  if(chr_filter){
+    print('')
+    print('chr filter...')
+    mapped_GRanges <- mapped_GRanges[as.character(mapped_GRanges@seqnames) %in% mapped_chr]
+    print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  }
   
   #length filter
-  print('')
-  print('length mismatch filter...')
-  temp <- ori_GRanges[mapped_GRanges$name]
-  delta_length <- mapped_GRanges@ranges@width - temp@ranges@width
-  delta_length <- delta_length/temp@ranges@width
-  
-  temp <- data.frame(ratio=delta_length)
-  temp <- ggplot(temp,aes(x=ratio)) + 
-    geom_density() + 
-    xlim(c(-1*length_mismatch,1*length_mismatch)) + 
-    theme_cowplot() + 
-    theme(aspect.ratio = 0.75)
-  print(temp)
-  delta_length <- c(abs(delta_length) <= length_mismatch)
-  mapped_GRanges <- mapped_GRanges[delta_length]
-  print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  if(length_filter){
+    print('')
+    print('length mismatch filter...')
+    temp <- ori_GRanges[mapped_GRanges$name]
+    delta_length <- mapped_GRanges@ranges@width - temp@ranges@width
+    delta_length <- delta_length/(temp@ranges@width)
+    
+    temp <- data.frame(ratio=delta_length)
+    temp <- ggplot(temp,aes(x=ratio)) + 
+      geom_density() + 
+      xlim(c(-1*length_mismatch,1*length_mismatch)) + 
+      theme_cowplot() + 
+      theme(aspect.ratio = 0.75)
+    print(temp)
+    delta_length <- c(abs(delta_length) <= length_mismatch)
+    mapped_GRanges <- mapped_GRanges[delta_length]
+    print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  }
   
   #overlap filter
-  print('')
-  print('overlapped peak filter...')
-  mapped_GRanges <- mapped_GRanges[GenomicRanges::countOverlaps(query = mapped_GRanges,subject = mapped_GRanges) == 1]
-  print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  if(overlap_filter){
+    print('')
+    print('overlapped peak filter...')
+    mapped_GRanges <- mapped_GRanges[GenomicRanges::countOverlaps(query = mapped_GRanges,subject = mapped_GRanges) == 1]
+    print(paste0('ori peakset length: ',length(ori_GRanges),', mapped peakset length: ',length(mapped_GRanges),', ratio: ',round(length(mapped_GRanges)/length(ori_GRanges)*100,digits = 2),'%'))
+  }
   
   #return data
   temp <- S4Vectors::SimpleList(
@@ -135,9 +148,9 @@ my_bedtools_merge <- function(peakset_x,
   }
   
   #append peaksets
-  peakset_x <- GenomicRanges::GRanges(seqnames = peakset_x@seqnames,ranges = peakset_x@ranges)
-  peakset_y <- GenomicRanges::GRanges(seqnames = peakset_y@seqnames,ranges = peakset_y@ranges)
-  peakset <- append(peakset_x,peakset_y)
+  peakset_x <- GenomicRanges::GRanges(seqnames = peakset_x@seqnames,ranges = peakset_x@ranges,strand = peakset_x@strand)
+  peakset_y <- GenomicRanges::GRanges(seqnames = peakset_y@seqnames,ranges = peakset_y@ranges,strand = peakset_y@strand)
+  peakset <- base::append(peakset_x,peakset_y)
   char <- paste(tmp_path,'append_peakset.bed',sep = '/')
   rtracklayer::export.bed(object = peakset,con = char)
   
@@ -152,7 +165,7 @@ my_bedtools_merge <- function(peakset_x,
   }else{
     char <- paste0(bedtools_path,' merge -d ',d)
   }
-  char <- paste(char,'-i',temp,'>',paste(tmp_path,'merged_peakset.bed',sep = '/'))
+  char <- paste(char,'-i',temp,'>',paste(tmp_path,'merged_peakset.bed',sep = '/'),sep = ' ')
   system(char)
   
   #return data
