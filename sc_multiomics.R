@@ -1357,3 +1357,60 @@ my_confusion_matrix <- function(ori, prd){
   cross.validation.filt <- cross.validation.filt %>% tidyr::gather(key = "prd", value = "value", -ori) %>% filter(value > 0)
   return(cross.validation.filt)
 }
+
+#' do unpaired wilcoxon test on sparse matrix using presto, modified from ArchR:::.sparseMatWilcoxon.
+#' @param mat1 the first feature-by-sample matrix, used as numerator in log2FC.
+#' @param mat2 the second feature-by-sample matrix, used as denominator in log2FC.
+my_sparseMatWilcoxon <- function(mat1,mat2){
+  
+  #require package
+  require(presto)
+  require(Matrix)
+  
+  #check input
+  n1 <- ncol(mat1)
+  n2 <- ncol(mat2)
+  if(n1 != n2){
+    warning('unequal col number in mat1 and mat2!')
+  }
+  if(n1 == 0 | n2 == 0){
+    stop('col number can not be zero!')
+  }
+  if(nrow(mat1) != nrow(mat2)){
+    stop('mat1 and mat2 must have identical features!')
+  }
+  mat1 <- as(mat1,'sparseMatrix')
+  mat2 <- as(mat2,'sparseMatrix')
+  
+  #filter features
+  m1 <- Matrix::rowSums(mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(mat2,na.rm = TRUE)
+  temp <- m1+m2
+  temp <- c(temp > 0)
+  char <- as.character(length(m1) - sum(temp))
+  char <- paste(char,'gene filted due to zero value',sep = ' ')
+  print(char)
+  
+  mat1 <- mat1[temp,]
+  mat2 <- mat2[temp,]
+  
+  #df analysis using presto
+  df <- presto::wilcoxauc(X = cbind(mat1,mat2),y = c(rep('Top',times = n1),rep('Bot',times = n2)))
+  df <- df[which(df$group == "Top"),]
+  
+  m1 <- Matrix::rowSums(mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(mat2,na.rm = TRUE)
+  offset <- 1
+  log2FC <- log2((m1 + offset)/(m2 + offset)) + log2(n2/n1)
+  
+  #return
+  out <- data.frame(log2FC = log2FC,
+                    fdr = df$padj,
+                    pval = df$pval,
+                    mean1 = Matrix::rowMeans(mat1,na.rm = TRUE),
+                    mean2 = Matrix::rowMeans(mat2,na.rm = TRUE),
+                    n1 = ncol(mat1),
+                    n2 = ncol(mat2),
+                    auc = df$auc)
+  return(out)
+}
