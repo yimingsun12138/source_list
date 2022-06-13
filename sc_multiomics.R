@@ -1414,3 +1414,171 @@ my_sparseMatWilcoxon <- function(mat1,mat2){
                     auc = df$auc)
   return(out)
 }
+
+#' do wilcoxon test on matrix using stats::wilcox.test.
+#' @param mat1 the first feature-by-sample matrix, used as numerator in log2FC.
+#' @param mat2 the second feature-by-sample matrix, used as denominator in log2FC.
+#' @param alternative a character string specifying the alternative hypothesis, must be one of "two.sided" (default), "greater" or "less". You can specify just the initial letter.
+#' @param paired a logical indicating whether you want a paired test.
+#' @param workers how many cores to be used for computation? Default use all cores.
+#' @param future.globals.maxSize the max size of objects used in paralleled computation, default is 2GB.
+my_DF_wilcox_test <- function(mat1,
+                              mat2,
+                              alternative = 'two.sided',
+                              paired = FALSE,
+                              workers = NULL,
+                              future.globals.maxSize = 2*(1024^3),
+                              ...){
+  
+  #require package
+  require(Matrix)
+  require(future)
+  require(future.apply)
+  
+  #check input
+  n1 <- ncol(mat1)
+  n2 <- ncol(mat2)
+  if(n1 == 0 | n2 == 0){
+    stop('col number can not be zero!')
+  }
+  if(nrow(mat1) != nrow(mat2)){
+    stop('mat1 and mat2 must have identical features!')
+  }
+  if((paired == TRUE) & (n1 != n2)){
+    stop('paired wilcoxon test must have same sample numbers!')
+  }
+  mat1 <- as.matrix(mat1)
+  mat2 <- as.matrix(mat2)
+  
+  #filter features
+  m1 <- Matrix::rowSums(x = mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(x = mat2,na.rm = TRUE)
+  temp <- m1+m2
+  temp <- c(temp > 0)
+  char <- as.character(length(m1) - sum(temp))
+  char <- paste(char,'gene filted due to zero value',sep = ' ')
+  print(char)
+  
+  mat1 <- mat1[temp,]
+  mat2 <- mat2[temp,]
+  
+  #future package parallel
+  options(future.globals.maxSize = future.globals.maxSize)
+  if(is.null(workers)){
+    workers <- future::availableCores()
+  }
+  
+  #df analysis
+  plan(multisession,workers = workers)
+  p_val <- future.apply::future_lapply(X = 1:nrow(mat1),FUN = function(i){
+    p <- stats::wilcox.test(x = as.numeric(mat1[i,]),
+                            y = as.numeric(mat2[i,]),
+                            alternative = alternative,
+                            paired = paired,
+                            ...)
+    return(p$p.value)
+  })
+  plan(sequential)
+  p_val <- unlist(p_val)
+  
+  m1 <- Matrix::rowSums(x = mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(x = mat2,na.rm = TRUE)
+  offset <- 1
+  log2FC <- log2((m1 + offset)/(m2 + offset)) + log2(n2/n1)
+  
+  #return
+  out <- data.frame(log2FC = log2FC,
+                    fdr = p.adjust(p = p_val,method = 'fdr'),
+                    pval = p_val,
+                    mean1 = Matrix::rowMeans(x = mat1,na.rm = TRUE),
+                    mean2 = Matrix::rowMeans(x = mat2,na.rm = TRUE),
+                    n1 = ncol(mat1),
+                    n2 = ncol(mat2))
+  rownames(out) <- rownames(mat1)
+  gc()
+  return(out)
+}
+
+#' do student t test on matrix using stats::t.test.
+#' @param mat1 the first feature-by-sample matrix, used as numerator in log2FC.
+#' @param mat2 the second feature-by-sample matrix, used as denominator in log2FC.
+#' @param alternative a character string specifying the alternative hypothesis, must be one of "two.sided" (default), "greater" or "less". You can specify just the initial letter.
+#' @param paired a logical indicating whether you want a paired test.
+#' @param workers how many cores to be used for computation? Default use all cores.
+#' @param future.globals.maxSize the max size of objects used in paralleled computation, default is 2GB.
+my_DF_t_test <- function(mat1,
+                         mat2,
+                         alternative = 'two.sided',
+                         paired = FALSE,
+                         workers = NULL,
+                         future.globals.maxSize = 2*(1024^3),
+                         ...){
+  
+  #require package
+  require(Matrix)
+  require(future)
+  require(future.apply)
+  
+  #check input
+  n1 <- ncol(mat1)
+  n2 <- ncol(mat2)
+  if(n1 == 0 | n2 == 0){
+    stop('col number can not be zero!')
+  }
+  if(nrow(mat1) != nrow(mat2)){
+    stop('mat1 and mat2 must have identical features!')
+  }
+  if((paired == TRUE) & (n1 != n2)){
+    stop('paired t test must have same sample numbers!')
+  }
+  mat1 <- as.matrix(mat1)
+  mat2 <- as.matrix(mat2)
+  
+  #filter features
+  m1 <- Matrix::rowSums(x = mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(x = mat2,na.rm = TRUE)
+  temp <- m1+m2
+  temp <- c(temp > 0)
+  char <- as.character(length(m1) - sum(temp))
+  char <- paste(char,'gene filted due to zero value',sep = ' ')
+  print(char)
+  
+  mat1 <- mat1[temp,]
+  mat2 <- mat2[temp,]
+  
+  #future package parallel
+  options(future.globals.maxSize = future.globals.maxSize)
+  if(is.null(workers)){
+    workers <- future::availableCores()
+  }
+  
+  #df analysis
+  plan(multisession,workers = workers)
+  p_val <- future.apply::future_lapply(X = 1:nrow(mat1),FUN = function(i){
+    p <- stats::t.test(x = as.numeric(mat1[i,]),
+                       y = as.numeric(mat2[i,]),
+                       alternative = alternative,
+                       paired = paired,
+                       ...)
+    return(p$p.value)
+  })
+  plan(sequential)
+  p_val <- unlist(p_val)
+  
+  m1 <- Matrix::rowSums(x = mat1,na.rm = TRUE)
+  m2 <- Matrix::rowSums(x = mat2,na.rm = TRUE)
+  offset <- 1
+  log2FC <- log2((m1 + offset)/(m2 + offset)) + log2(n2/n1)
+  
+  #return
+  out <- data.frame(log2FC = log2FC,
+                    fdr = p.adjust(p = p_val,method = 'fdr'),
+                    pval = p_val,
+                    mean1 = Matrix::rowMeans(x = mat1,na.rm = TRUE),
+                    mean2 = Matrix::rowMeans(x = mat2,na.rm = TRUE),
+                    n1 = ncol(mat1),
+                    n2 = ncol(mat2))
+  rownames(out) <- rownames(mat1)
+  gc()
+  return(out)
+}
