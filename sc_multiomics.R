@@ -1,7 +1,7 @@
 ###################################################
 ## Project: sc_multiomics                        ##
 ## Script Purpose: collect the function I wrote  ##
-## Data: 2021.12.29                              ##
+## Data: 2022.07.17                              ##
 ## Author: Yiming Sun                            ##
 ###################################################
 
@@ -1042,6 +1042,183 @@ my_dimplot <- function(embedding,meta_data,group.by = NULL,split.by = NULL,label
   return(p)
 }
 
+#' do wilcoxon test on seurat object.
+#' @param seu.obj the seurat object on which to do the wilcox test.
+#' @param assay which assay to use in the seu.obj? Must contain the slot 'data'.
+#' @param ident.1 the first cell group set, used as numerator in log2FC.
+#' @param ident.2 the second cell group set, used as denominator in log2FC.
+#' @param group.by by which meta data to re-group the cells?
+#' @param min.express above which should we consider the gene is expressed in the cell?
+#' @param log2fc_thresholf limit testing to genes which show, on average, at least X-fold difference (log2-scale) between the two groups of cells.
+#' @param pct.1 only test genes that are detected in a minimum fraction of pct.1 cells in ident.1 group.
+#' @param features genes to be tested, default is to use all genes.
+#' @param only.pos only care about positive markers.
+#' @param workers how many cores to be used for computation? Default use all cores.
+#' @param future.globals.maxSize the max size of objects used in paralleled computation, default is 2GB.
+my_seurat_marker_wilcox_test <- function(seu.obj,
+                                         assay = 'RNA',
+                                         ident.1,
+                                         ident.2,
+                                         group.by,
+                                         min.express = 0,
+                                         log2fc_thresholf = 0.25,
+                                         pct.1 = 0.1,
+                                         features = NULL,
+                                         only.pos = TRUE,
+                                         workers = NULL,
+                                         future.globals.maxSize = 2*(1024^3)){
+  
+  #library
+  require(Seurat)
+  
+  #check input
+  if(class(seu.obj) != 'Seurat'){
+    stop('seu.obj must be a seurat object!')
+  }
+  if(!(assay %in% names(seu.obj@assays))){
+    stop('assay not found!')
+  }
+  if(!(group.by %in% colnames(seu.obj@meta.data))){
+    stop('group not found in meta data!')
+  }
+  
+  #modify input
+  group_list <- base::unique(as.character(seu.obj@meta.data[,group.by]))
+  if(sum(ident.1 %in% group_list) < length(ident.1)){
+    stop('ident.1 not found in the group list!')
+  }
+  if(sum(ident.2 %in% group_list) < length(ident.2)){
+    stop('ident.2 not found in the group list!')
+  }
+  
+  express_matrix <- SeuratObject::GetAssayData(object = seu.obj,slot = 'data',assay = assay)
+  if(is.null(features)){
+    features <- rownames(express_matrix)
+  }else{
+    if(sum(!(features %in% rownames(express_matrix))) > 0){
+      stop('features not found in the expression matrix!')
+    }
+  }
+  
+  if(only.pos == TRUE){
+    alternative <- 'greater'
+  }else if(only.pos == FALSE){
+    alternative <- 'two.sided'
+    #when finding negative markers, pct.1 is not suitable for filtering.
+    pct.1 <- -1
+  }else{
+    stop('wrong input of the parameter only.pos!')
+  }
+  
+  #get cell list
+  cells.1 <- colnames(seu.obj)[seu.obj@meta.data[,group.by] %in% ident.1]
+  cells.2 <- colnames(seu.obj)[seu.obj@meta.data[,group.by] %in% ident.2]
+  mat.1 <- express_matrix[features,cells.1,drop = FALSE]
+  mat.1 <- expm1(mat.1)
+  mat.2 <- express_matrix[features,cells.2,drop = FALSE]
+  mat.2 <- expm1(mat.2)
+  
+  #do wilcox test
+  wilcox_out <- my_DF_wilcox_test(mat1 = mat.1,mat2 = mat.2,alternative = alternative,paired = FALSE,workers = workers,future.globals.maxSize = future.globals.maxSize)
+  wilcox_out <- wilcox_out[,c('log2FC','pval','fdr','mean1','mean2'),drop = FALSE]
+  
+  temp <- rowSums(mat.1[rownames(wilcox_out),,drop = FALSE] > min.express)
+  wilcox_out$pct.1 <- temp/ncol(mat.1)
+  
+  temp <- rowSums(mat.2[rownames(wilcox_out),,drop = FALSE] > min.express)
+  wilcox_out$pct.2 <- temp/ncol(mat.2)
+  
+  #return
+  wilcox_out <- wilcox_out[abs(wilcox_out$log2FC) > log2fc_thresholf,,drop = FALSE]
+  wilcox_out <- wilcox_out[wilcox_out$pct.1 > pct.1,,drop = FALSE]
+  if(only.pos == TRUE){
+    wilcox_out <- wilcox_out[wilcox_out$log2FC > 0,,drop = FALSE]
+  }
+  wilcox_out$fdr <- p.adjust(p = wilcox_out$pval,method = 'fdr')
+  gc()
+  message('Recommend: using p.adjust(p = pval,method = \'fdr\') to modify the fdr if you want to filter more genes by yourself.')
+  return(wilcox_out)
+}
+
+#' find cell type specific markers by doing wilcox test between the target cell type and each one of the remaining cell types.
+#' @param seu.obj the seurat object on which to do the wilcox test.
+#' @param assay which assay to use in the seu.obj? Must contain the slot 'data'.
+#' @param ident.1 target cell type that you would like to know its specific markers.
+#' @param group.by by which meta data to re-group the cells?
+#' @param min.express above which should we consider the gene is expressed in the cell?
+#' @param log2fc_thresholf limit testing to genes which show, on average, at least X-fold difference (log2-scale) between the two groups of cells.
+#' @param pct.1 only test genes that are detected in a minimum fraction of pct.1 cells in ident.1 group.
+#' @param features genes to be tested, default is to use all genes.
+#' @param overlap_ratio above which ratio when a gene is calculated as marker gene, should we consider it as the specific marker gene? Default overlap_ratio = 1 means the specific marker must be called as marker in all rounds of wilcox tests.
+#' @param workers how many cores to be used for computation? Default use all cores.
+#' @param future.globals.maxSize the max size of objects used in paralleled computation, default is 2GB.
+my_seurat_find_specific_marker <- function(seu.obj,
+                                           assay = 'RNA',
+                                           ident.1,
+                                           group.by,
+                                           min.express = 0,
+                                           log2fc_thresholf = 0.25,
+                                           pct.1 = 0.1,
+                                           features = NULL,
+                                           overlap_ratio = 1,
+                                           workers = NULL,
+                                           future.globals.maxSize = 2*(1024^3)){
+  
+  #library
+  require(Seurat)
+  
+  #check input
+  if(class(seu.obj) != 'Seurat'){
+    stop('seu.obj must be a seurat object!')
+  }
+  if(!(assay %in% names(seu.obj@assays))){
+    stop('assay not found!')
+  }
+  if(!(group.by %in% colnames(seu.obj@meta.data))){
+    stop('group not found in meta data!')
+  }
+  if(!is.null(features)){
+    if(sum(features %in% rownames(seu.obj@assays[[assay]]@data)) < length(features)){
+      stop('features not found in the expression matrix!')
+    }
+  }
+  
+  #modify input
+  group_list <- base::unique(as.character(seu.obj@meta.data[,group.by]))
+  if(sum(ident.1 %in% group_list) < length(ident.1)){
+    stop('ident.1 not found in the group list!')
+  }
+  if(length(group_list) == length(ident.1)){
+    stop('no other groups to compare!')
+  }
+  group_list <- group_list[!(group_list %in% ident.1)]
+  
+  #calculate marker
+  marker_list <- base::lapply(X = group_list,FUN = function(x){
+    temp <- suppressMessages(my_seurat_marker_wilcox_test(seu.obj = seu.obj,assay = assay,ident.1 = ident.1,ident.2 = x,group.by = group.by,min.express = min.express,log2fc_thresholf = log2fc_thresholf,pct.1 = pct.1,features = features,only.pos = TRUE,workers = workers,future.globals.maxSize = future.globals.maxSize))
+    char <- paste(x,'claculate done!',nrow(temp),'marker detected.',sep = ' ')
+    message(char)
+    return(rownames(temp))
+  })
+  gc()
+  
+  marker_list <- base::unlist(marker_list)
+  if(length(marker_list) == 0){
+    warning('no marker found!')
+    return(NULL)
+  }
+  unique_marker_list <- base::unique(marker_list)
+  
+  #filter markers
+  marker_list <- table(marker_list)[unique_marker_list]
+  marker_list <- unique_marker_list[marker_list >= length(group_list)*overlap_ratio]
+  char <- length(unique_marker_list) - length(marker_list)
+  char <- paste(as.character(char),'gene filted due to overlap ratio.')
+  message(char)
+  gc()
+  return(marker_list)
+}
+
 # liger related -----------------------------------------------------------
 
 #' suggest k and lambda for NMF in liger
@@ -1389,14 +1566,14 @@ my_sparseMatWilcoxon <- function(mat1,mat2){
   temp <- c(temp > 0)
   char <- as.character(length(m1) - sum(temp))
   char <- paste(char,'gene filted due to zero value',sep = ' ')
-  print(char)
+  message(char)
   
-  mat1 <- mat1[temp,]
-  mat2 <- mat2[temp,]
+  mat1 <- mat1[temp,,drop = FALSE]
+  mat2 <- mat2[temp,,drop = FALSE]
   
   #df analysis using presto
   df <- presto::wilcoxauc(X = cbind(mat1,mat2),y = c(rep('Top',times = n1),rep('Bot',times = n2)))
-  df <- df[which(df$group == "Top"),]
+  df <- df[which(df$group == "Top"),,drop = FALSE]
   
   m1 <- Matrix::rowSums(mat1,na.rm = TRUE)
   m2 <- Matrix::rowSums(mat2,na.rm = TRUE)
@@ -1457,10 +1634,10 @@ my_DF_wilcox_test <- function(mat1,
   temp <- c(temp > 0)
   char <- as.character(length(m1) - sum(temp))
   char <- paste(char,'gene filted due to zero value',sep = ' ')
-  print(char)
+  message(char)
   
-  mat1 <- mat1[temp,]
-  mat2 <- mat2[temp,]
+  mat1 <- mat1[temp,,drop = FALSE]
+  mat2 <- mat2[temp,,drop = FALSE]
   
   #future package parallel
   options(future.globals.maxSize = future.globals.maxSize)
@@ -1541,10 +1718,10 @@ my_DF_t_test <- function(mat1,
   temp <- c(temp > 0)
   char <- as.character(length(m1) - sum(temp))
   char <- paste(char,'gene filted due to zero value',sep = ' ')
-  print(char)
+  message(char)
   
-  mat1 <- mat1[temp,]
-  mat2 <- mat2[temp,]
+  mat1 <- mat1[temp,,drop = FALSE]
+  mat2 <- mat2[temp,,drop = FALSE]
   
   #future package parallel
   options(future.globals.maxSize = future.globals.maxSize)
